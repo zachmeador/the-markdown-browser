@@ -1,0 +1,193 @@
+{
+  "name": "the-markdown-browser",
+  "displayName": "The Markdown Browser",
+  "description": "A workspace browser mode focused on Markdown files and preview-first navigation.",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:markdownBrowser.files",
+    "onCommand:markdownBrowser.collapseAll",
+    "onCommand:markdownBrowser.expandAll",
+    "onCommand:markdownBrowser.hideGitignoredFiles",
+    "onCommand:markdownBrowser.openPreview",
+    "onCommand:markdownBrowser.showListView",
+    "onCommand:markdownBrowser.showGitignoredFiles",
+    "onCommand:markdownBrowser.showTreeView",
+    "onCommand:markdownBrowser.toggleExplorerPreviewOpen",
+    "onCommand:markdownBrowser.refresh"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "markdownBrowser.openPreview",
+        "title": "Markdown Browser: Open Preview",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "markdownBrowser.expandAll",
+        "title": "Markdown Browser: Expand All",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "markdownBrowser.collapseAll",
+        "title": "Markdown Browser: Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "markdownBrowser.showListView",
+        "title": "Markdown Browser: Show as List",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "markdownBrowser.showTreeView",
+        "title": "Markdown Browser: Show as Tree",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "markdownBrowser.showGitignoredFiles",
+        "title": "Markdown Browser: Show Gitignored Files",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "markdownBrowser.hideGitignoredFiles",
+        "title": "Markdown Browser: Hide Gitignored Files",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "markdownBrowser.toggleExplorerPreviewOpen",
+        "title": "Markdown Browser: Toggle Explorer Opens Markdown Preview",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "markdownBrowser.refresh",
+        "title": "Markdown Browser: Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "markdownBrowser",
+          "title": "Markdown",
+          "icon": "media/markdown.svg"
+        }
+      ]
+    },
+    "views": {
+      "markdownBrowser": [
+        {
+          "id": "markdownBrowser.files",
+          "name": "Files"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "markdownBrowser.openPreview",
+          "when": "editorLangId == markdown"
+        },
+        {
+          "command": "markdownBrowser.toggleExplorerPreviewOpen"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "markdownBrowser.openPreview",
+          "when": "editorLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "markdownBrowser.openPreview",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "markdownBrowser.showListView",
+          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "markdownBrowser.showTreeView",
+          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == list",
+          "group": "navigation@1"
+        },
+        {
+          "command": "markdownBrowser.expandAll",
+          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree && markdownBrowser.treeExpanded == false",
+          "group": "navigation@2"
+        },
+        {
+          "command": "markdownBrowser.collapseAll",
+          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree && markdownBrowser.treeExpanded == true",
+          "group": "navigation@2"
+        },
+        {
+          "command": "markdownBrowser.showGitignoredFiles",
+          "when": "view == markdownBrowser.files && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == false",
+          "group": "navigation@3"
+        },
+        {
+          "command": "markdownBrowser.hideGitignoredFiles",
+          "when": "view == markdownBrowser.files && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == true",
+          "group": "navigation@3"
+        },
+        {
+          "command": "markdownBrowser.refresh",
+          "when": "view == markdownBrowser.files",
+          "group": "navigation@9"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "markdown.preview.openMarkdownLinks": "inPreview",
+      "workbench.editor.mouseBackForwardToNavigate": true
+    },
+    "configuration": {
+      "title": "The Markdown Browser",
+      "properties": {
+        "markdownBrowser.excludedDirectories": {
+          "type": "array",
+          "default": [
+            ".git",
+            ".hg",
+            ".svn",
+            ".vscode",
+            ".venv",
+            "node_modules",
+            "dist",
+            "out",
+            "build",
+            "coverage"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Directory names to hide from the Markdown Browser tree."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.2"
+  }
+}
