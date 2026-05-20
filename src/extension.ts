@@ -40,6 +40,7 @@ interface MarkdownLocation {
 interface OpenLinkMessage {
   type: 'openLink';
   href: string;
+  openInNewTab?: boolean;
 }
 
 interface HistoryMessage {
@@ -142,7 +143,7 @@ class MarkdownBrowserPreview {
     }
 
     if (message.type === 'openLink') {
-      await this.openLink(message.href);
+      await this.openLink(message.href, message.openInNewTab === true);
     }
   }
 
@@ -173,12 +174,17 @@ class MarkdownBrowserPreview {
     );
   }
 
-  private async openLink(href: string): Promise<void> {
+  private async openLink(href: string, openInNewTab: boolean): Promise<void> {
     if (!this.current) {
       return;
     }
 
     const target = await resolveMarkdownLink(this.current.uri, href);
+
+    if (openInNewTab) {
+      await openLinkTargetInNewTab(target);
+      return;
+    }
 
     if (target.kind === 'markdown') {
       await this.navigate(target.location, true);
@@ -275,7 +281,11 @@ ${body}
       }
 
       event.preventDefault();
-      vscode.postMessage({ type: 'openLink', href });
+      vscode.postMessage({
+        type: 'openLink',
+        href,
+        openInNewTab: event.metaKey || event.ctrlKey
+      });
     });
 
     const pressedNavigationButtons = new Set();
@@ -747,6 +757,38 @@ async function toggleExplorerPreviewOpen(): Promise<void> {
   const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'user settings';
   const state = isEnabled ? 'disabled' : 'enabled';
   vscode.window.showInformationMessage(`Markdown preview is now ${state} as the default .md opener in ${scope}.`);
+}
+
+async function openLinkTargetInNewTab(target: LinkTarget): Promise<void> {
+  if (target.kind === 'markdown') {
+    await vscode.commands.executeCommand(
+      'vscode.openWith',
+      target.location.uri.with({ fragment: target.location.fragment }),
+      MARKDOWN_PREVIEW_EDITOR,
+      {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Active
+      }
+    );
+    return;
+  }
+
+  if (target.kind === 'file') {
+    await vscode.commands.executeCommand('vscode.open', target.uri, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.Active
+    });
+    return;
+  }
+
+  if (target.kind === 'folder') {
+    await vscode.commands.executeCommand('revealInExplorer', target.uri);
+    return;
+  }
+
+  if (target.kind === 'external') {
+    await vscode.env.openExternal(target.uri);
+  }
 }
 
 async function readUtf8File(uri: vscode.Uri): Promise<string> {

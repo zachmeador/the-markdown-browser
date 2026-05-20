@@ -1,9 +1,9 @@
 {
   "name": "the-markdown-browser",
   "displayName": "The Markdown Browser",
-  "description": "A workspace browser mode focused on Markdown files and preview-first navigation.",
+  "description": "A good markdown browser.",
   "version": "0.0.1",
-  "publisher": "local-dev",
+  "publisher": "ZachMeador",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
