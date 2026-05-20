@@ -9,7 +9,9 @@ A minimal VS Code extension that adds a Markdown-focused workspace browser.
 - Switches between tree mode and a flattened list mode from the Markdown view title bar.
 - Toggles between expanding and collapsing the Markdown tree.
 - Hides gitignored Markdown files by default when the workspace is inside a Git repo, with a view action to show them.
-- Opens selected Markdown files directly in the built-in Markdown preview.
+- Opens selected Markdown files in an extension-owned Markdown browser webview.
+- Keeps Markdown links in the same browser tab and supports back/forward mouse buttons inside that webview.
+- Adds Markdown Browser back/forward commands for the custom webview history.
 - Adds a current-file/explorer command for opening Markdown files in preview.
 - Adds a toggle command that makes VS Code's normal Explorer open `.md` files with the Markdown preview by default in the current workspace.
 - Defaults Markdown preview links to open inside the preview, so local document links feel browser-like.
@@ -26,4 +28,4 @@ Then press `F5` in VS Code to launch an Extension Development Host.
 
 ## Notes
 
-VS Code's built-in Markdown preview updates itself when preview links stay in-preview, so those clicks may not enter VS Code's normal editor history. VS Code extension keybindings support keyboard keys, not raw mouse side buttons, so mouse back/forward support needs either VS Code's own navigation stack or a custom preview webview owned by this extension.
+The Markdown browser uses VS Code's Markdown renderer for document HTML, then wraps it in this extension's own webview shell. That makes local Markdown links stay in one tab and lets the webview handle mouse button 3/4 for browser-style back/forward navigation. VS Code's default global back/forward buttons use the workbench editor history, which is separate from this webview's internal Markdown-link history.

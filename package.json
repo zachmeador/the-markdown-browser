@@ -16,6 +16,8 @@
     "onCommand:markdownBrowser.collapseAll",
     "onCommand:markdownBrowser.expandAll",
     "onCommand:markdownBrowser.hideGitignoredFiles",
+    "onCommand:markdownBrowser.navigateBack",
+    "onCommand:markdownBrowser.navigateForward",
     "onCommand:markdownBrowser.openPreview",
     "onCommand:markdownBrowser.showListView",
     "onCommand:markdownBrowser.showGitignoredFiles",
@@ -30,6 +32,16 @@
         "command": "markdownBrowser.openPreview",
         "title": "Markdown Browser: Open Preview",
         "icon": "$(eye)"
+      },
+      {
+        "command": "markdownBrowser.navigateBack",
+        "title": "Markdown Browser: Back",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "markdownBrowser.navigateForward",
+        "title": "Markdown Browser: Forward",
+        "icon": "$(arrow-right)"
       },
       {
         "command": "markdownBrowser.expandAll",
@@ -96,6 +108,14 @@
           "when": "editorLangId == markdown"
         },
         {
+          "command": "markdownBrowser.navigateBack",
+          "when": "activeWebviewPanelId == 'markdownBrowser.preview' && markdownBrowser.previewCanGoBack == true"
+        },
+        {
+          "command": "markdownBrowser.navigateForward",
+          "when": "activeWebviewPanelId == 'markdownBrowser.preview' && markdownBrowser.previewCanGoForward == true"
+        },
+        {
           "command": "markdownBrowser.toggleExplorerPreviewOpen"
         }
       ],
@@ -104,6 +124,16 @@
           "command": "markdownBrowser.openPreview",
           "when": "editorLangId == markdown",
           "group": "navigation"
+        },
+        {
+          "command": "markdownBrowser.navigateBack",
+          "when": "activeWebviewPanelId == 'markdownBrowser.preview' && markdownBrowser.previewCanGoBack == true",
+          "group": "navigation@1"
+        },
+        {
+          "command": "markdownBrowser.navigateForward",
+          "when": "activeWebviewPanelId == 'markdownBrowser.preview' && markdownBrowser.previewCanGoForward == true",
+          "group": "navigation@2"
         }
       ],
       "explorer/context": [
@@ -152,8 +182,7 @@
       ]
     },
     "configurationDefaults": {
-      "markdown.preview.openMarkdownLinks": "inPreview",
-      "workbench.editor.mouseBackForwardToNavigate": true
+      "markdown.preview.openMarkdownLinks": "inPreview"
     },
     "configuration": {
       "title": "The Markdown Browser",

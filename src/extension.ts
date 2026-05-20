@@ -7,6 +7,7 @@ const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.mkd
 const MARKDOWN_PREVIEW_EDITOR = 'vscode.markdown.preview.editor';
 const MARKDOWN_EDITOR_ASSOCIATION = '*.md';
 const COLLAPSE_ALL_COMMAND = 'workbench.actions.treeView.markdownBrowser.files.collapseAll';
+const MARKDOWN_BROWSER_VIEW_TYPE = 'markdownBrowser.preview';
 const VIEW_MODE_STORAGE_KEY = 'markdownBrowser.viewMode';
 const SHOW_GITIGNORED_STORAGE_KEY = 'markdownBrowser.showGitignoredFiles';
 const execFileAsync = promisify(execFile);
@@ -29,6 +30,319 @@ type MarkdownViewMode = 'tree' | 'list';
 interface GitWorkspaceState {
   hasGitWorkspace: boolean;
   ignoredFilesByWorkspace: Map<string, Set<string>>;
+}
+
+interface MarkdownLocation {
+  uri: vscode.Uri;
+  fragment?: string;
+}
+
+interface OpenLinkMessage {
+  type: 'openLink';
+  href: string;
+}
+
+interface HistoryMessage {
+  type: 'back' | 'forward';
+}
+
+type WebviewMessage = OpenLinkMessage | HistoryMessage;
+type LinkTarget =
+  | { kind: 'markdown'; location: MarkdownLocation }
+  | { kind: 'file' | 'folder' | 'external'; uri: vscode.Uri }
+  | { kind: 'missing' };
+
+class MarkdownBrowserPreview {
+  private panel?: vscode.WebviewPanel;
+  private current?: MarkdownLocation;
+  private history: MarkdownLocation[] = [];
+  private historyIndex = -1;
+  private readonly disposables: vscode.Disposable[] = [];
+
+  public constructor(private readonly context: vscode.ExtensionContext) {}
+
+  public async open(uri: vscode.Uri): Promise<void> {
+    await this.navigate({ uri }, true);
+  }
+
+  public async back(): Promise<void> {
+    await this.goBack();
+  }
+
+  public async forward(): Promise<void> {
+    await this.goForward();
+  }
+
+  public dispose(): void {
+    this.panel?.dispose();
+    this.disposables.splice(0).forEach((disposable) => disposable.dispose());
+    void this.updateNavigationContext();
+  }
+
+  private async navigate(location: MarkdownLocation, pushHistory: boolean): Promise<void> {
+    if (!this.panel) {
+      this.panel = vscode.window.createWebviewPanel(
+        MARKDOWN_BROWSER_VIEW_TYPE,
+        'Markdown Browser',
+        vscode.ViewColumn.Active,
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true,
+          localResourceRoots: getWebviewResourceRoots(this.context, location.uri)
+        }
+      );
+
+      this.disposables.push(
+        this.panel.onDidDispose(() => {
+          this.panel = undefined;
+          this.current = undefined;
+          this.history = [];
+          this.historyIndex = -1;
+          void this.updateNavigationContext();
+        }),
+        this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+          void this.handleMessage(message);
+        })
+      );
+    }
+
+    this.current = location;
+
+    if (pushHistory) {
+      this.pushHistory(location);
+    }
+
+    this.panel.title = path.basename(location.uri.fsPath);
+    this.panel.webview.html = await this.render(location);
+    this.panel.reveal(vscode.ViewColumn.Active, true);
+    await this.updateNavigationContext();
+  }
+
+  private pushHistory(location: MarkdownLocation): void {
+    const current = this.history[this.historyIndex];
+
+    if (current && sameLocation(current, location)) {
+      return;
+    }
+
+    this.history = this.history.slice(0, this.historyIndex + 1);
+    this.history.push(location);
+    this.historyIndex = this.history.length - 1;
+  }
+
+  private async handleMessage(message: WebviewMessage): Promise<void> {
+    if (message.type === 'back') {
+      await this.goBack();
+      return;
+    }
+
+    if (message.type === 'forward') {
+      await this.goForward();
+      return;
+    }
+
+    if (message.type === 'openLink') {
+      await this.openLink(message.href);
+    }
+  }
+
+  private async goBack(): Promise<void> {
+    if (this.historyIndex <= 0) {
+      return;
+    }
+
+    this.historyIndex -= 1;
+    await this.navigate(this.history[this.historyIndex], false);
+  }
+
+  private async goForward(): Promise<void> {
+    if (this.historyIndex >= this.history.length - 1) {
+      return;
+    }
+
+    this.historyIndex += 1;
+    await this.navigate(this.history[this.historyIndex], false);
+  }
+
+  private async updateNavigationContext(): Promise<void> {
+    await vscode.commands.executeCommand('setContext', 'markdownBrowser.previewCanGoBack', this.historyIndex > 0);
+    await vscode.commands.executeCommand(
+      'setContext',
+      'markdownBrowser.previewCanGoForward',
+      this.historyIndex >= 0 && this.historyIndex < this.history.length - 1
+    );
+  }
+
+  private async openLink(href: string): Promise<void> {
+    if (!this.current) {
+      return;
+    }
+
+    const target = await resolveMarkdownLink(this.current.uri, href);
+
+    if (target.kind === 'markdown') {
+      await this.navigate(target.location, true);
+      return;
+    }
+
+    if (target.kind === 'file') {
+      await vscode.commands.executeCommand('vscode.open', target.uri);
+      return;
+    }
+
+    if (target.kind === 'folder') {
+      await vscode.commands.executeCommand('revealInExplorer', target.uri);
+      return;
+    }
+
+    if (target.kind === 'external') {
+      await vscode.env.openExternal(target.uri);
+    }
+  }
+
+  private async render(location: MarkdownLocation): Promise<string> {
+    const source = await readUtf8File(location.uri);
+    const rendered = await renderMarkdown(source);
+    const body = rewriteLocalImageSources(rendered, location.uri, this.panel!.webview);
+    const nonce = createNonce();
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${this.panel!.webview.cspSource} https: data:; style-src ${this.panel!.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <style>
+    body {
+      box-sizing: border-box;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 28px 34px 56px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      line-height: 1.6;
+    }
+
+    a { color: var(--vscode-textLink-foreground); }
+    a:hover { color: var(--vscode-textLink-activeForeground); }
+    img { max-width: 100%; height: auto; }
+    pre {
+      overflow-x: auto;
+      padding: 12px;
+      border-radius: 6px;
+      background: var(--vscode-textCodeBlock-background);
+    }
+    code {
+      font-family: var(--vscode-editor-font-family);
+      background: var(--vscode-textCodeBlock-background);
+      border-radius: 4px;
+      padding: 0.1em 0.3em;
+    }
+    pre code { padding: 0; background: transparent; }
+    blockquote {
+      margin-left: 0;
+      padding-left: 16px;
+      border-left: 3px solid var(--vscode-textBlockQuote-border);
+      color: var(--vscode-textBlockQuote-foreground);
+    }
+    table { border-collapse: collapse; }
+    th, td {
+      border: 1px solid var(--vscode-editorWidget-border);
+      padding: 6px 10px;
+    }
+  </style>
+</head>
+<body>
+  <main class="markdown-body">
+${body}
+  </main>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    const initialFragment = ${JSON.stringify(location.fragment ?? '')};
+
+    document.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const anchor = target?.closest('a');
+      if (!anchor) {
+        return;
+      }
+
+      const href = anchor.getAttribute('data-href') || anchor.getAttribute('href');
+      if (!href) {
+        return;
+      }
+
+      event.preventDefault();
+      vscode.postMessage({ type: 'openLink', href });
+    });
+
+    const pressedNavigationButtons = new Set();
+
+    function isNavigationMouseButton(event) {
+      return event.button === 3 || event.button === 4;
+    }
+
+    function consumeNavigationMouseEvent(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }
+
+    window.addEventListener('mousedown', (event) => {
+      if (!isNavigationMouseButton(event)) {
+        return;
+      }
+
+      consumeNavigationMouseEvent(event);
+      pressedNavigationButtons.add(event.button);
+    }, true);
+
+    window.addEventListener('mouseup', (event) => {
+      if (!isNavigationMouseButton(event)) {
+        return;
+      }
+
+      consumeNavigationMouseEvent(event);
+
+      if (pressedNavigationButtons.has(event.button)) {
+        vscode.postMessage({ type: event.button === 3 ? 'back' : 'forward' });
+      }
+
+      pressedNavigationButtons.delete(event.button);
+    }, true);
+
+    window.addEventListener('auxclick', (event) => {
+      if (isNavigationMouseButton(event)) {
+        consumeNavigationMouseEvent(event);
+        pressedNavigationButtons.delete(event.button);
+      }
+    }, true);
+
+    window.addEventListener('blur', () => {
+      pressedNavigationButtons.clear();
+    });
+    document.addEventListener('mouseleave', () => {
+      pressedNavigationButtons.clear();
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (!initialFragment) {
+        return;
+      }
+
+      let id = initialFragment;
+      try {
+        id = decodeURIComponent(initialFragment);
+      } catch {}
+      const target = document.getElementById(id) || document.getElementById(initialFragment);
+      target?.scrollIntoView();
+    });
+  </script>
+</body>
+</html>`;
+  }
 }
 
 class MarkdownNode extends vscode.TreeItem {
@@ -293,6 +607,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const initialViewMode = normalizeViewMode(context.workspaceState.get<MarkdownViewMode>(VIEW_MODE_STORAGE_KEY));
   const initialShowGitignoredFiles = context.workspaceState.get<boolean>(SHOW_GITIGNORED_STORAGE_KEY, false);
   const provider = new MarkdownBrowserProvider(initialViewMode, initialShowGitignoredFiles);
+  const markdownPreview = new MarkdownBrowserPreview(context);
   const treeView = vscode.window.createTreeView('markdownBrowser.files', {
     treeDataProvider: provider
   });
@@ -300,6 +615,8 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'markdownBrowser.viewMode', initialViewMode);
   void vscode.commands.executeCommand('setContext', 'markdownBrowser.treeExpanded', treeExpanded);
   void vscode.commands.executeCommand('setContext', 'markdownBrowser.showGitignoredFiles', initialShowGitignoredFiles);
+  void vscode.commands.executeCommand('setContext', 'markdownBrowser.previewCanGoBack', false);
+  void vscode.commands.executeCommand('setContext', 'markdownBrowser.previewCanGoForward', false);
   void updateHasGitWorkspaceContext();
 
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.{md,markdown,mdown,mkd,mkdn}');
@@ -312,6 +629,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     treeView,
+    markdownPreview,
     watcher,
     watcher.onDidCreate(refresh),
     watcher.onDidChange(refresh),
@@ -333,7 +651,9 @@ export function activate(context: vscode.ExtensionContext): void {
       treeExpanded = false;
       await vscode.commands.executeCommand('setContext', 'markdownBrowser.treeExpanded', treeExpanded);
     }),
-    vscode.commands.registerCommand('markdownBrowser.openPreview', openMarkdownPreview),
+    vscode.commands.registerCommand('markdownBrowser.openPreview', (uri?: vscode.Uri) => openMarkdownPreview(markdownPreview, uri)),
+    vscode.commands.registerCommand('markdownBrowser.navigateBack', () => markdownPreview.back()),
+    vscode.commands.registerCommand('markdownBrowser.navigateForward', () => markdownPreview.forward()),
     vscode.commands.registerCommand('markdownBrowser.showListView', async () => {
       treeExpanded = false;
       await vscode.commands.executeCommand('setContext', 'markdownBrowser.treeExpanded', treeExpanded);
@@ -354,7 +674,7 @@ export function deactivate(): void {
   // No cleanup needed; VS Code disposes subscriptions registered during activation.
 }
 
-async function openMarkdownPreview(uri?: vscode.Uri): Promise<void> {
+async function openMarkdownPreview(markdownPreview: MarkdownBrowserPreview, uri?: vscode.Uri): Promise<void> {
   if (!uri) {
     uri = vscode.window.activeTextEditor?.document.uri;
   }
@@ -363,12 +683,7 @@ async function openMarkdownPreview(uri?: vscode.Uri): Promise<void> {
     return;
   }
 
-  await vscode.commands.executeCommand(
-    'vscode.openWith',
-    uri,
-    MARKDOWN_PREVIEW_EDITOR,
-    vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.Active
-  );
+  await markdownPreview.open(uri);
 }
 
 async function updateViewMode(
@@ -432,6 +747,180 @@ async function toggleExplorerPreviewOpen(): Promise<void> {
   const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'user settings';
   const state = isEnabled ? 'disabled' : 'enabled';
   vscode.window.showInformationMessage(`Markdown preview is now ${state} as the default .md opener in ${scope}.`);
+}
+
+async function readUtf8File(uri: vscode.Uri): Promise<string> {
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+async function renderMarkdown(source: string): Promise<string> {
+  try {
+    return await vscode.commands.executeCommand<string>('markdown.api.render', source);
+  } catch {
+    return `<pre>${escapeHtml(source)}</pre>`;
+  }
+}
+
+async function resolveMarkdownLink(sourceUri: vscode.Uri, href: string): Promise<LinkTarget> {
+  const trimmedHref = href.trim();
+
+  if (!trimmedHref) {
+    return { kind: 'missing' };
+  }
+
+  if (trimmedHref.startsWith('#')) {
+    return {
+      kind: 'markdown',
+      location: {
+        uri: sourceUri,
+        fragment: trimmedHref.slice(1)
+      }
+    };
+  }
+
+  const explicitScheme = /^[a-z][a-z0-9+.-]*:/i.exec(trimmedHref)?.[0]?.slice(0, -1).toLowerCase();
+
+  if (explicitScheme && explicitScheme !== 'file') {
+    return {
+      kind: 'external',
+      uri: vscode.Uri.parse(trimmedHref)
+    };
+  }
+
+  const [rawPath, rawFragment] = splitHref(trimmedHref);
+  const targetUri = explicitScheme === 'file'
+    ? vscode.Uri.parse(trimmedHref).with({ fragment: '' })
+    : vscode.Uri.file(path.resolve(path.dirname(sourceUri.fsPath), decodeUriComponentSafe(rawPath)));
+  const resolvedUri = await resolveExistingLinkedUri(targetUri);
+
+  if (!resolvedUri) {
+    return { kind: 'missing' };
+  }
+
+  const stat = await statUri(resolvedUri);
+
+  if (!stat) {
+    return { kind: 'missing' };
+  }
+
+  if (stat.type === vscode.FileType.Directory) {
+    return { kind: 'folder', uri: resolvedUri };
+  }
+
+  if (isMarkdownFile(resolvedUri.fsPath)) {
+    return {
+      kind: 'markdown',
+      location: {
+        uri: resolvedUri,
+        fragment: rawFragment
+      }
+    };
+  }
+
+  return { kind: 'file', uri: resolvedUri };
+}
+
+async function resolveExistingLinkedUri(uri: vscode.Uri): Promise<vscode.Uri | undefined> {
+  if (await statUri(uri)) {
+    return uri;
+  }
+
+  if (path.extname(uri.fsPath)) {
+    return undefined;
+  }
+
+  for (const extension of MARKDOWN_EXTENSIONS) {
+    const candidate = vscode.Uri.file(`${uri.fsPath}${extension}`);
+
+    if (await statUri(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+async function statUri(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
+  try {
+    return await vscode.workspace.fs.stat(uri);
+  } catch {
+    return undefined;
+  }
+}
+
+function splitHref(href: string): [string, string | undefined] {
+  const hashIndex = href.indexOf('#');
+
+  if (hashIndex === -1) {
+    return [href, undefined];
+  }
+
+  return [href.slice(0, hashIndex), href.slice(hashIndex + 1)];
+}
+
+function rewriteLocalImageSources(html: string, sourceUri: vscode.Uri, webview: vscode.Webview): string {
+  return html.replace(/<img\b([^>]*?)(\s)src=(["'])([^"']+)\3/gi, (match, before: string, space: string, quote: string, src: string) => {
+    const rewrittenSrc = rewriteLocalResourceSource(src, sourceUri, webview);
+    return `<img${before}${space}src=${quote}${escapeAttribute(rewrittenSrc)}${quote}`;
+  });
+}
+
+function rewriteLocalResourceSource(src: string, sourceUri: vscode.Uri, webview: vscode.Webview): string {
+  if (!src || src.startsWith('#') || /^(?:[a-z][a-z0-9+.-]*:|data:)/i.test(src)) {
+    return src;
+  }
+
+  const [rawPath] = splitHref(src);
+  const resourceUri = vscode.Uri.file(path.resolve(path.dirname(sourceUri.fsPath), decodeUriComponentSafe(rawPath)));
+  return webview.asWebviewUri(resourceUri).toString();
+}
+
+function getWebviewResourceRoots(context: vscode.ExtensionContext, uri: vscode.Uri): vscode.Uri[] {
+  return [
+    context.extensionUri,
+    ...(vscode.workspace.workspaceFolders?.map((folder) => folder.uri) ?? [vscode.Uri.file(path.dirname(uri.fsPath))])
+  ];
+}
+
+function createNonce(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let nonce = '';
+
+  for (let i = 0; i < 32; i += 1) {
+    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+
+  return nonce;
+}
+
+function decodeUriComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;');
+}
+
+function sameLocation(a: MarkdownLocation, b: MarkdownLocation): boolean {
+  return a.uri.toString() === b.uri.toString() && a.fragment === b.fragment;
 }
 
 function isMarkdownFile(fileName: string): boolean {
