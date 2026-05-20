@@ -74,6 +74,24 @@ class MarkdownBrowserPreview {
     await this.goForward();
   }
 
+  public async refreshIfCurrent(uri: vscode.Uri): Promise<void> {
+    if (!this.panel || !this.current || !sameUri(this.current.uri, uri)) {
+      return;
+    }
+
+    const panel = this.panel;
+    const location = this.current;
+    const html = await this.render(location);
+
+    if (this.panel !== panel || !this.current || !sameLocation(this.current, location)) {
+      return;
+    }
+
+    panel.title = path.basename(location.uri.fsPath);
+    panel.webview.html = html;
+    await this.updateNavigationContext();
+  }
+
   public dispose(): void {
     this.panel?.dispose();
     this.disposables.splice(0).forEach((disposable) => disposable.dispose());
@@ -636,13 +654,17 @@ export function activate(context: vscode.ExtensionContext): void {
     provider.refresh();
     void updateHasGitWorkspaceContext();
   };
+  const refreshChangedMarkdown = (uri: vscode.Uri) => {
+    refresh();
+    void markdownPreview.refreshIfCurrent(uri);
+  };
 
   context.subscriptions.push(
     treeView,
     markdownPreview,
     watcher,
     watcher.onDidCreate(refresh),
-    watcher.onDidChange(refresh),
+    watcher.onDidChange(refreshChangedMarkdown),
     watcher.onDidDelete(refresh),
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -963,6 +985,10 @@ function escapeAttribute(value: string): string {
 
 function sameLocation(a: MarkdownLocation, b: MarkdownLocation): boolean {
   return a.uri.toString() === b.uri.toString() && a.fragment === b.fragment;
+}
+
+function sameUri(a: vscode.Uri, b: vscode.Uri): boolean {
+  return a.toString() === b.toString();
 }
 
 function isMarkdownFile(fileName: string): boolean {
