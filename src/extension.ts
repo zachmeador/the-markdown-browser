@@ -37,6 +37,21 @@ interface MarkdownLocation {
   fragment?: string;
 }
 
+interface FrontmatterEntry {
+  key: string;
+  value: string;
+}
+
+interface FrontmatterBlock {
+  raw: string;
+  entries: FrontmatterEntry[];
+}
+
+interface MarkdownSourceParts {
+  frontmatter?: FrontmatterBlock;
+  markdown: string;
+}
+
 interface OpenLinkMessage {
   type: 'openLink';
   href: string;
@@ -226,7 +241,9 @@ class MarkdownBrowserPreview {
 
   private async render(location: MarkdownLocation): Promise<string> {
     const source = await readUtf8File(location.uri);
-    const rendered = await renderMarkdown(source);
+    const sourceParts = splitFrontmatter(source);
+    const rendered = await renderMarkdown(sourceParts.markdown);
+    const frontmatter = renderFrontmatter(sourceParts.frontmatter);
     const body = rewriteLocalImageSources(rendered, location.uri, this.panel!.webview);
     const nonce = createNonce();
 
@@ -276,10 +293,41 @@ class MarkdownBrowserPreview {
       border: 1px solid var(--vscode-editorWidget-border);
       padding: 6px 10px;
     }
+    .frontmatter {
+      margin: 0 0 24px;
+      padding: 12px 14px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background);
+    }
+    .frontmatter dl {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 8px 16px;
+      margin: 0;
+    }
+    .frontmatter-row { display: contents; }
+    .frontmatter dt {
+      font-weight: 600;
+      color: var(--vscode-descriptionForeground);
+    }
+    .frontmatter dd {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .frontmatter pre {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
   </style>
 </head>
 <body>
   <main class="markdown-body">
+${frontmatter}
 ${body}
   </main>
   <script nonce="${nonce}">
@@ -824,6 +872,107 @@ async function renderMarkdown(source: string): Promise<string> {
   } catch {
     return `<pre>${escapeHtml(source)}</pre>`;
   }
+}
+
+function splitFrontmatter(source: string): MarkdownSourceParts {
+  const openingFence = /^\uFEFF?---[ \t]*(?:\r?\n|$)/.exec(source);
+
+  if (!openingFence || openingFence[0].endsWith('---')) {
+    return { markdown: source };
+  }
+
+  const contentStart = openingFence[0].length;
+  let cursor = contentStart;
+
+  while (cursor < source.length) {
+    const lineEnd = source.indexOf('\n', cursor);
+    const nextCursor = lineEnd === -1 ? source.length : lineEnd + 1;
+    const line = source.slice(cursor, lineEnd === -1 ? source.length : lineEnd).replace(/\r$/, '');
+
+    if (/^(?:---|\.\.\.)[ \t]*$/.test(line)) {
+      const raw = source.slice(contentStart, cursor);
+
+      return {
+        frontmatter: {
+          raw,
+          entries: parseFrontmatterEntries(raw)
+        },
+        markdown: source.slice(nextCursor)
+      };
+    }
+
+    cursor = nextCursor;
+  }
+
+  return { markdown: source };
+}
+
+function parseFrontmatterEntries(raw: string): FrontmatterEntry[] {
+  const entries: FrontmatterEntry[] = [];
+  let current: { key: string; valueLines: string[] } | undefined;
+
+  const flushCurrent = () => {
+    if (!current) {
+      return;
+    }
+
+    entries.push({
+      key: current.key,
+      value: current.valueLines.join('\n').replace(/^\n/, '').trimEnd()
+    });
+    current = undefined;
+  };
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (!current && (!line.trim() || line.trimStart().startsWith('#'))) {
+      continue;
+    }
+
+    const keyValue = /^([^:\s][^:]*):(?:[ \t]*(.*))?$/.exec(line);
+
+    if (keyValue) {
+      flushCurrent();
+      current = {
+        key: keyValue[1].trim(),
+        valueLines: [keyValue[2] ?? '']
+      };
+      continue;
+    }
+
+    if (current) {
+      current.valueLines.push(line);
+    }
+  }
+
+  flushCurrent();
+  return entries;
+}
+
+function renderFrontmatter(frontmatter: FrontmatterBlock | undefined): string {
+  if (!frontmatter || (!frontmatter.entries.length && !frontmatter.raw.trim())) {
+    return '';
+  }
+
+  if (!frontmatter.entries.length) {
+    return `<section class="frontmatter" aria-label="Frontmatter"><pre>${escapeHtml(frontmatter.raw.trim())}</pre></section>`;
+  }
+
+  const rows = frontmatter.entries.map((entry) => {
+    return [
+      '    <div class="frontmatter-row">',
+      `      <dt>${escapeHtml(entry.key)}</dt>`,
+      `      <dd>${escapeHtml(entry.value)}</dd>`,
+      '    </div>'
+    ].join('\n');
+  });
+
+  return [
+    '<section class="frontmatter" aria-label="Frontmatter">',
+    '  <dl>',
+    ...rows,
+    '  </dl>',
+    '</section>'
+  ].join('\n');
 }
 
 async function resolveMarkdownLink(sourceUri: vscode.Uri, href: string): Promise<LinkTarget> {
