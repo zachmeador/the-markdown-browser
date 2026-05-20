@@ -2,6 +2,10 @@
 
 A minimal VS Code extension that adds a Markdown-focused workspace browser.
 
+I wanted a more Obsidian-like behavior going through markdowns, so that's what this is.
+
+Source: https://github.com/zachmeador/the-markdown-browser
+
 ## What it does
 
 - Adds a left-side activity bar container named **Markdown**.

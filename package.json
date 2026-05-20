@@ -2,9 +2,17 @@
   "name": "the-markdown-browser",
   "displayName": "The Markdown Browser",
   "description": "A good markdown browser.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "ZachMeador",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zachmeador/the-markdown-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zachmeador/the-markdown-browser/issues"
+  },
+  "homepage": "https://github.com/zachmeador/the-markdown-browser#readme",
   "engines": {
     "vscode": "^1.90.0"
   },
