@@ -6,6 +6,8 @@ I wanted a more Obsidian-like behavior going through markdowns, so that's what t
 
 Source: https://github.com/zachmeador/the-markdown-browser
 
+Marketplace: https://marketplace.visualstudio.com/items?itemName=ZachMeador.the-markdown-browser
+
 ## What it does
 
 - Adds a left-side activity bar container named **Markdown**.
