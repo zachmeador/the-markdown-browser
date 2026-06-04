@@ -12,6 +12,7 @@ Marketplace: https://marketplace.visualstudio.com/items?itemName=ZachMeador.the-
 
 - Adds a left-side activity bar container named **Markdown**.
 - Shows workspace folders and only directories that contain Markdown files.
+- Shows a collapsible **Linked Files** view section for Markdown files linked from the current Markdown file.
 - Switches between tree mode and a flattened list mode from the Markdown view title bar.
 - Toggles between expanding and collapsing the Markdown tree.
 - Hides gitignored Markdown files by default when the workspace is inside a Git repo, with a view action to show them.

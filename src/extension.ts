@@ -11,6 +11,7 @@ const MARKDOWN_BROWSER_VIEW_TYPE = 'markdownBrowser.preview';
 const VIEW_MODE_STORAGE_KEY = 'markdownBrowser.viewMode';
 const SHOW_GITIGNORED_STORAGE_KEY = 'markdownBrowser.showGitignoredFiles';
 const TREE_BUSY_CONTEXT = 'markdownBrowser.treeBusy';
+const LINKED_FILES_MESSAGE_URI = vscode.Uri.parse('markdown-browser://linked-files/message');
 const execFileAsync = promisify(execFile);
 const FILE_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -31,6 +32,7 @@ const DEFAULT_EXCLUDED_DIRECTORIES = new Set([
 ]);
 
 type MarkdownNodeKind = 'workspace' | 'folder' | 'file';
+type LinkedMarkdownNodeKind = 'file' | 'message';
 type MarkdownViewMode = 'tree' | 'list';
 
 interface GitWorkspaceState {
@@ -84,11 +86,16 @@ class MarkdownBrowserPreview {
   private history: MarkdownLocation[] = [];
   private historyIndex = -1;
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly onDidChangeCurrentMarkdownEmitter = new vscode.EventEmitter<vscode.Uri | undefined>();
+  public readonly onDidChangeCurrentMarkdown = this.onDidChangeCurrentMarkdownEmitter.event;
 
-  public constructor(private readonly context: vscode.ExtensionContext) {}
+  public constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly onCurrentMarkdownChanged?: (uri: vscode.Uri | undefined) => void
+  ) {}
 
   public async open(uri: vscode.Uri): Promise<void> {
-    await this.navigate({ uri }, true);
+    await this.navigate(markdownLocationFromUri(uri), true);
   }
 
   public async back(): Promise<void> {
@@ -97,6 +104,10 @@ class MarkdownBrowserPreview {
 
   public async forward(): Promise<void> {
     await this.goForward();
+  }
+
+  public getCurrentMarkdownUri(): vscode.Uri | undefined {
+    return this.current?.uri;
   }
 
   public async refreshIfCurrent(uri: vscode.Uri): Promise<void> {
@@ -120,6 +131,7 @@ class MarkdownBrowserPreview {
   public dispose(): void {
     this.panel?.dispose();
     this.disposables.splice(0).forEach((disposable) => disposable.dispose());
+    this.onDidChangeCurrentMarkdownEmitter.dispose();
     void this.updateNavigationContext();
   }
 
@@ -142,6 +154,8 @@ class MarkdownBrowserPreview {
           this.current = undefined;
           this.history = [];
           this.historyIndex = -1;
+          this.onDidChangeCurrentMarkdownEmitter.fire(undefined);
+          this.onCurrentMarkdownChanged?.(undefined);
           void this.updateNavigationContext();
         }),
         this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
@@ -151,6 +165,8 @@ class MarkdownBrowserPreview {
     }
 
     this.current = location;
+    this.onDidChangeCurrentMarkdownEmitter.fire(location.uri);
+    this.onCurrentMarkdownChanged?.(location.uri);
 
     if (pushHistory) {
       this.pushHistory(location);
@@ -272,8 +288,13 @@ class MarkdownBrowserCustomDocument implements vscode.CustomDocument {
 
 class MarkdownBrowserCustomEditorProvider implements vscode.CustomReadonlyEditorProvider<MarkdownBrowserCustomDocument> {
   private readonly panelUrisByDocumentUri = new Map<string, Map<vscode.WebviewPanel, vscode.Uri>>();
+  private readonly onDidChangeCurrentMarkdownEmitter = new vscode.EventEmitter<vscode.Uri>();
+  public readonly onDidChangeCurrentMarkdown = this.onDidChangeCurrentMarkdownEmitter.event;
 
-  public constructor(private readonly context: vscode.ExtensionContext) {}
+  public constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly onCurrentMarkdownChanged?: (uri: vscode.Uri) => void
+  ) {}
 
   public openCustomDocument(uri: vscode.Uri): MarkdownBrowserCustomDocument {
     return new MarkdownBrowserCustomDocument(uri);
@@ -311,6 +332,8 @@ class MarkdownBrowserCustomEditorProvider implements vscode.CustomReadonlyEditor
     );
 
     await this.renderPanel(document.uri, webviewPanel);
+    this.onDidChangeCurrentMarkdownEmitter.fire(document.uri.with({ fragment: '' }));
+    this.onCurrentMarkdownChanged?.(document.uri.with({ fragment: '' }));
   }
 
   public async refresh(uri: vscode.Uri): Promise<void> {
@@ -861,15 +884,155 @@ class MarkdownBrowserProvider implements vscode.TreeDataProvider<MarkdownNode> {
   }
 }
 
+class LinkedMarkdownNode extends vscode.TreeItem {
+  public constructor(
+    public readonly kind: LinkedMarkdownNodeKind,
+    public readonly uri: vscode.Uri,
+    label: string,
+    description?: string,
+    commandUri: vscode.Uri = uri
+  ) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+
+    this.id = `${kind}:${commandUri.toString()}`;
+    this.contextValue = `markdownBrowser.linked.${kind}`;
+    this.description = description;
+
+    if (kind === 'file') {
+      this.resourceUri = uri.with({ fragment: '' });
+      this.command = {
+        command: 'markdownBrowser.openPreview',
+        title: 'Open Markdown Preview',
+        arguments: [commandUri]
+      };
+    } else {
+      this.iconPath = new vscode.ThemeIcon('info');
+    }
+  }
+}
+
+class LinkedMarkdownProvider implements vscode.TreeDataProvider<LinkedMarkdownNode> {
+  private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<LinkedMarkdownNode | undefined | null | void>();
+  public readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
+  private currentMarkdownUri?: vscode.Uri;
+  private linkedMarkdownFilesCache?: Promise<LinkedMarkdownNode[]>;
+  private gitState?: Promise<GitWorkspaceState>;
+
+  public constructor(private showGitignoredFiles: boolean) {}
+
+  public setCurrentMarkdownUri(uri: vscode.Uri | undefined): void {
+    const markdownUri = uri && isMarkdownFile(uri.fsPath) ? uri.with({ fragment: '' }) : undefined;
+
+    if (sameOptionalUri(this.currentMarkdownUri, markdownUri)) {
+      return;
+    }
+
+    this.currentMarkdownUri = markdownUri;
+    this.refresh();
+  }
+
+  public setShowGitignoredFiles(showGitignoredFiles: boolean): void {
+    this.showGitignoredFiles = showGitignoredFiles;
+    this.refresh();
+  }
+
+  public getCurrentMarkdownUri(): vscode.Uri | undefined {
+    return this.currentMarkdownUri;
+  }
+
+  public refresh(uri?: vscode.Uri): void {
+    if (uri) {
+      if (!this.currentMarkdownUri || !sameUri(uri.with({ fragment: '' }), this.currentMarkdownUri)) {
+        return;
+      }
+    }
+
+    this.linkedMarkdownFilesCache = undefined;
+    this.gitState = undefined;
+    this.onDidChangeTreeDataEmitter.fire();
+  }
+
+  public getTreeItem(element: LinkedMarkdownNode): vscode.TreeItem {
+    return element;
+  }
+
+  public async getChildren(element?: LinkedMarkdownNode): Promise<LinkedMarkdownNode[]> {
+    if (element) {
+      return [];
+    }
+
+    this.linkedMarkdownFilesCache ??= this.getLinkedMarkdownChildrenUncached();
+    return this.linkedMarkdownFilesCache;
+  }
+
+  private async getLinkedMarkdownChildrenUncached(): Promise<LinkedMarkdownNode[]> {
+    if (!this.currentMarkdownUri) {
+      return [createLinkedMessageNode('Open a Markdown file')];
+    }
+
+    let locations: MarkdownLocation[];
+    try {
+      locations = await getLinkedMarkdownLocations(this.currentMarkdownUri);
+    } catch {
+      return [createLinkedMessageNode('Could not read current file')];
+    }
+
+    if (!locations.length) {
+      return [createLinkedMessageNode('No linked Markdown files')];
+    }
+
+    const nodes: LinkedMarkdownNode[] = [];
+
+    for (const location of locations) {
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(location.uri);
+
+      if (!await this.isVisibleMarkdownFile(location.uri, workspaceFolder)) {
+        continue;
+      }
+
+      nodes.push(createLinkedFileNode(location, this.currentMarkdownUri, workspaceFolder));
+    }
+
+    return nodes.length ? nodes : [createLinkedMessageNode('No linked Markdown files')];
+  }
+
+  private async isVisibleMarkdownFile(
+    uri: vscode.Uri,
+    workspaceFolder?: vscode.WorkspaceFolder
+  ): Promise<boolean> {
+    if (this.showGitignoredFiles || !workspaceFolder) {
+      return true;
+    }
+
+    const gitState = await this.getGitState();
+    const ignoredFiles = gitState.ignoredFilesByWorkspace.get(workspaceFolder.uri.toString());
+    return !ignoredFiles?.has(normalizePath(uri.fsPath));
+  }
+
+  private getGitState(): Promise<GitWorkspaceState> {
+    this.gitState ??= getGitWorkspaceState();
+    return this.gitState;
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const initialViewMode = normalizeViewMode(context.workspaceState.get<MarkdownViewMode>(VIEW_MODE_STORAGE_KEY));
   const initialShowGitignoredFiles = context.workspaceState.get<boolean>(SHOW_GITIGNORED_STORAGE_KEY, false);
   const provider = new MarkdownBrowserProvider(initialViewMode, initialShowGitignoredFiles);
-  const markdownPreview = new MarkdownBrowserPreview(context);
-  const markdownPreviewEditor = new MarkdownBrowserCustomEditorProvider(context);
+  const linkedProvider = new LinkedMarkdownProvider(initialShowGitignoredFiles);
   const treeView = vscode.window.createTreeView('markdownBrowser.files', {
     treeDataProvider: provider
   });
+  const linkedTreeView = vscode.window.createTreeView('markdownBrowser.linkedFiles', {
+    treeDataProvider: linkedProvider
+  });
+  const debugOutput = vscode.window.createOutputChannel('Markdown Browser');
+  const updateLinkedMarkdownUri = (uri: vscode.Uri | undefined) => {
+    linkedProvider.setCurrentMarkdownUri(uri);
+    linkedTreeView.description = uri ? path.basename(uri.fsPath) : undefined;
+  };
+  const markdownPreview = new MarkdownBrowserPreview(context, updateLinkedMarkdownUri);
+  const markdownPreviewEditor = new MarkdownBrowserCustomEditorProvider(context, updateLinkedMarkdownUri);
   let treeExpanded = false;
   let treeBusy = false;
   void vscode.commands.executeCommand('setContext', 'markdownBrowser.viewMode', initialViewMode);
@@ -901,17 +1064,36 @@ export function activate(context: vscode.ExtensionContext): void {
     treeExpanded = false;
     void vscode.commands.executeCommand('setContext', 'markdownBrowser.treeExpanded', treeExpanded);
     provider.refresh();
+    linkedProvider.refresh();
     void updateHasGitWorkspaceContext(provider);
   };
   const refreshChangedMarkdown = (uri: vscode.Uri) => {
     void markdownPreview.refreshIfCurrent(uri);
     void markdownPreviewEditor.refresh(uri);
+    linkedProvider.refresh(uri);
   };
+  const updateCurrentMarkdownFromActiveTab = () => {
+    const uri = getCurrentMarkdownUri(markdownPreview);
+
+    if (uri) {
+      updateLinkedMarkdownUri(uri);
+    }
+  };
+  updateCurrentMarkdownFromActiveTab();
 
   context.subscriptions.push(
     treeView,
+    linkedTreeView,
+    debugOutput,
     markdownPreview,
+    markdownPreview.onDidChangeCurrentMarkdown((uri) => {
+      updateLinkedMarkdownUri(uri ?? getCurrentMarkdownUri(markdownPreview));
+    }),
+    markdownPreviewEditor.onDidChangeCurrentMarkdown((uri) => updateLinkedMarkdownUri(uri)),
     vscode.window.registerCustomEditorProvider(MARKDOWN_PREVIEW_EDITOR, markdownPreviewEditor),
+    vscode.window.onDidChangeActiveTextEditor(updateCurrentMarkdownFromActiveTab),
+    vscode.window.tabGroups.onDidChangeTabs(updateCurrentMarkdownFromActiveTab),
+    vscode.window.tabGroups.onDidChangeTabGroups(updateCurrentMarkdownFromActiveTab),
     watcher,
     watcher.onDidCreate(refresh),
     watcher.onDidChange(refreshChangedMarkdown),
@@ -926,6 +1108,11 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!treeBusy) {
         refresh();
       }
+    }),
+    vscode.commands.registerCommand('markdownBrowser.showDebugInfo', () => {
+      debugOutput.clear();
+      debugOutput.appendLine(formatDebugInfo(markdownPreview, linkedProvider));
+      debugOutput.show(true);
     }),
     vscode.commands.registerCommand('markdownBrowser.expandAll', () => runExclusiveTreeOperation(async () => {
       await expandAll(treeView, provider);
@@ -952,11 +1139,11 @@ export function activate(context: vscode.ExtensionContext): void {
     })),
     vscode.commands.registerCommand(
       'markdownBrowser.showGitignoredFiles',
-      () => runExclusiveTreeOperation(() => updateGitignoredVisibility(context, provider, true))
+      () => runExclusiveTreeOperation(() => updateGitignoredVisibility(context, provider, linkedProvider, true))
     ),
     vscode.commands.registerCommand(
       'markdownBrowser.hideGitignoredFiles',
-      () => runExclusiveTreeOperation(() => updateGitignoredVisibility(context, provider, false))
+      () => runExclusiveTreeOperation(() => updateGitignoredVisibility(context, provider, linkedProvider, false))
     ),
     vscode.commands.registerCommand('markdownBrowser.toggleExplorerPreviewOpen', toggleExplorerPreviewOpen)
   );
@@ -976,6 +1163,152 @@ async function openMarkdownPreview(markdownPreview: MarkdownBrowserPreview, uri?
   }
 
   await markdownPreview.open(uri);
+}
+
+function getCurrentMarkdownUri(markdownPreview: MarkdownBrowserPreview): vscode.Uri | undefined {
+  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+
+  if (activeTab) {
+    const activeTabUri = getMarkdownUriFromTab(activeTab, markdownPreview);
+
+    if (activeTabUri) {
+      return activeTabUri;
+    }
+  }
+
+  return getActiveMarkdownTextEditorUri()
+    ?? getVisibleMarkdownTextEditorUri()
+    ?? getOpenMarkdownTabUri(markdownPreview);
+}
+
+function getMarkdownUriFromTab(
+  tab: vscode.Tab,
+  markdownPreview: MarkdownBrowserPreview
+): vscode.Uri | undefined {
+  const input = tab.input;
+
+  if (input instanceof vscode.TabInputText) {
+    return isMarkdownFile(input.uri.fsPath) ? input.uri : undefined;
+  }
+
+  if (input instanceof vscode.TabInputCustom) {
+    return input.viewType === MARKDOWN_PREVIEW_EDITOR && isMarkdownFile(input.uri.fsPath)
+      ? input.uri
+      : undefined;
+  }
+
+  if (input instanceof vscode.TabInputWebview) {
+    return input.viewType === MARKDOWN_BROWSER_VIEW_TYPE
+      ? markdownPreview.getCurrentMarkdownUri()
+      : undefined;
+  }
+
+  return undefined;
+}
+
+function getActiveMarkdownTextEditorUri(): vscode.Uri | undefined {
+  const uri = vscode.window.activeTextEditor?.document.uri;
+  return uri && isMarkdownFile(uri.fsPath) ? uri : undefined;
+}
+
+function getVisibleMarkdownTextEditorUri(): vscode.Uri | undefined {
+  return vscode.window.visibleTextEditors.find((editor) => isMarkdownFile(editor.document.uri.fsPath))?.document.uri;
+}
+
+function getOpenMarkdownTabUri(markdownPreview: MarkdownBrowserPreview): vscode.Uri | undefined {
+  const activeGroup = vscode.window.tabGroups.activeTabGroup;
+  const groups = [
+    activeGroup,
+    ...vscode.window.tabGroups.all.filter((group) => group !== activeGroup)
+  ];
+
+  for (const group of groups) {
+    for (const tab of group.tabs) {
+      const uri = getMarkdownUriFromTab(tab, markdownPreview);
+
+      if (uri) {
+        return uri;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function formatDebugInfo(
+  markdownPreview: MarkdownBrowserPreview,
+  linkedProvider: LinkedMarkdownProvider
+): string {
+  const activeGroup = vscode.window.tabGroups.activeTabGroup;
+  const activeTab = activeGroup.activeTab;
+  const lines = [
+    `time: ${new Date().toISOString()}`,
+    `linkedProvider.currentMarkdownUri: ${formatUri(linkedProvider.getCurrentMarkdownUri())}`,
+    `markdownPreview.currentMarkdownUri: ${formatUri(markdownPreview.getCurrentMarkdownUri())}`,
+    `resolvedCurrentMarkdownUri: ${formatUri(getCurrentMarkdownUri(markdownPreview))}`,
+    `activeTextEditor: ${formatUri(vscode.window.activeTextEditor?.document.uri)}`,
+    `activeTabGroup: column=${activeGroup.viewColumn} active=${activeGroup.isActive}`,
+    `activeTab: ${activeTab ? describeTab(activeTab, markdownPreview) : '<none>'}`,
+    '',
+    'visibleTextEditors:',
+    ...vscode.window.visibleTextEditors.map((editor) => `- ${formatUri(editor.document.uri)}`),
+    '',
+    'tabGroups:',
+    ...vscode.window.tabGroups.all.flatMap((group, groupIndex) => [
+      `- group ${groupIndex} column=${group.viewColumn} active=${group.isActive}`,
+      ...group.tabs.map((tab) => `  - ${describeTab(tab, markdownPreview)}`)
+    ])
+  ];
+
+  return lines.join('\n');
+}
+
+function describeTab(tab: vscode.Tab, markdownPreview: MarkdownBrowserPreview): string {
+  const active = tab.isActive ? 'active' : 'inactive';
+  return `${tab.label} [${active}] input=${describeTabInput(tab.input)} markdownUri=${formatUri(getMarkdownUriFromTab(tab, markdownPreview))}`;
+}
+
+function describeTabInput(input: vscode.Tab['input']): string {
+  if (input instanceof vscode.TabInputText) {
+    return `text:${formatUri(input.uri)}`;
+  }
+
+  if (input instanceof vscode.TabInputCustom) {
+    return `custom:${input.viewType}:${formatUri(input.uri)}`;
+  }
+
+  if (input instanceof vscode.TabInputWebview) {
+    return `webview:${input.viewType}`;
+  }
+
+  if (input instanceof vscode.TabInputTextDiff) {
+    return `textDiff:${formatUri(input.original)}..${formatUri(input.modified)}`;
+  }
+
+  if (input instanceof vscode.TabInputNotebook) {
+    return `notebook:${input.notebookType}:${formatUri(input.uri)}`;
+  }
+
+  if (input instanceof vscode.TabInputNotebookDiff) {
+    return `notebookDiff:${input.notebookType}:${formatUri(input.original)}..${formatUri(input.modified)}`;
+  }
+
+  if (input instanceof vscode.TabInputTerminal) {
+    return 'terminal';
+  }
+
+  return `<unknown:${Object.prototype.toString.call(input)}>`;
+}
+
+function formatUri(uri: vscode.Uri | undefined): string {
+  return uri?.toString() ?? '<none>';
+}
+
+function markdownLocationFromUri(uri: vscode.Uri): MarkdownLocation {
+  return {
+    uri: uri.with({ fragment: '' }),
+    fragment: uri.fragment || undefined
+  };
 }
 
 async function openMarkdownSource(uri: vscode.Uri): Promise<void> {
@@ -999,11 +1332,13 @@ async function updateViewMode(
 async function updateGitignoredVisibility(
   context: vscode.ExtensionContext,
   provider: MarkdownBrowserProvider,
+  linkedProvider: LinkedMarkdownProvider,
   showGitignoredFiles: boolean
 ): Promise<void> {
   await context.workspaceState.update(SHOW_GITIGNORED_STORAGE_KEY, showGitignoredFiles);
   await vscode.commands.executeCommand('setContext', 'markdownBrowser.showGitignoredFiles', showGitignoredFiles);
   provider.setShowGitignoredFiles(showGitignoredFiles);
+  linkedProvider.setShowGitignoredFiles(showGitignoredFiles);
 }
 
 async function expandAll(
@@ -1079,6 +1414,82 @@ async function openLinkTargetInNewTab(target: LinkTarget): Promise<void> {
   if (target.kind === 'external') {
     await vscode.env.openExternal(target.uri);
   }
+}
+
+async function getLinkedMarkdownLocations(sourceUri: vscode.Uri): Promise<MarkdownLocation[]> {
+  const documentUri = sourceUri.with({ fragment: '' });
+  const source = await readUtf8File(documentUri);
+  const sourceParts = splitFrontmatter(source);
+  const rendered = await renderMarkdown(sourceParts.markdown);
+  const hrefs = extractAnchorHrefs(rendered);
+  const locations: MarkdownLocation[] = [];
+  const seenDocuments = new Set<string>();
+
+  for (const href of hrefs) {
+    const target = await resolveMarkdownLink(documentUri, href);
+
+    if (target.kind !== 'markdown' || sameUri(target.location.uri, documentUri)) {
+      continue;
+    }
+
+    const key = documentUriKey(target.location.uri);
+
+    if (seenDocuments.has(key)) {
+      continue;
+    }
+
+    seenDocuments.add(key);
+    locations.push(target.location);
+  }
+
+  return locations;
+}
+
+function extractAnchorHrefs(html: string): string[] {
+  const hrefs: string[] = [];
+
+  for (const match of html.matchAll(/<a\b[^>]*>/gi)) {
+    const tag = match[0];
+    const href = getHtmlAttribute(tag, 'data-href') ?? getHtmlAttribute(tag, 'href');
+
+    if (href) {
+      hrefs.push(decodeHtmlAttributeValue(href));
+    }
+  }
+
+  return hrefs;
+}
+
+function getHtmlAttribute(tag: string, name: string): string | undefined {
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function decodeHtmlAttributeValue(value: string): string {
+  return value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|amp|apos|lt|gt|quot);/gi, (entity, decimal, hex) => {
+    if (decimal) {
+      return String.fromCodePoint(Number(decimal));
+    }
+
+    if (hex) {
+      return String.fromCodePoint(Number.parseInt(hex, 16));
+    }
+
+    switch (entity.toLowerCase()) {
+      case '&amp;':
+        return '&';
+      case '&apos;':
+        return "'";
+      case '&lt;':
+        return '<';
+      case '&gt;':
+        return '>';
+      case '&quot;':
+        return '"';
+      default:
+        return entity;
+    }
+  });
 }
 
 async function readUtf8File(uri: vscode.Uri): Promise<string> {
@@ -1404,6 +1815,10 @@ function sameUri(a: vscode.Uri, b: vscode.Uri): boolean {
   return a.toString() === b.toString();
 }
 
+function sameOptionalUri(a: vscode.Uri | undefined, b: vscode.Uri | undefined): boolean {
+  return (!a && !b) || (!!a && !!b && sameUri(a, b));
+}
+
 function documentUriKey(uri: vscode.Uri): string {
   return uri.with({ fragment: '' }).toString();
 }
@@ -1507,6 +1922,61 @@ async function getIgnoredMarkdownFiles(
   } catch {
     return undefined;
   }
+}
+
+function createLinkedMessageNode(label: string): LinkedMarkdownNode {
+  return new LinkedMarkdownNode('message', LINKED_FILES_MESSAGE_URI.with({ fragment: label }), label);
+}
+
+function createLinkedFileNode(
+  location: MarkdownLocation,
+  sourceUri: vscode.Uri,
+  workspaceFolder: vscode.WorkspaceFolder | undefined
+): LinkedMarkdownNode {
+  const commandUri = location.fragment
+    ? location.uri.with({ fragment: location.fragment })
+    : location.uri;
+  const descriptionParts = getLinkedFileDescriptionParts(location.uri, sourceUri, workspaceFolder);
+
+  if (location.fragment) {
+    descriptionParts.push(`#${decodeUriComponentSafe(location.fragment)}`);
+  }
+
+  const node = new LinkedMarkdownNode(
+    'file',
+    location.uri,
+    path.basename(location.uri.fsPath),
+    descriptionParts.join(' '),
+    commandUri
+  );
+
+  node.tooltip = location.fragment
+    ? `${location.uri.fsPath}#${decodeUriComponentSafe(location.fragment)}`
+    : location.uri.fsPath;
+  return node;
+}
+
+function getLinkedFileDescriptionParts(
+  uri: vscode.Uri,
+  sourceUri: vscode.Uri,
+  workspaceFolder: vscode.WorkspaceFolder | undefined
+): string[] {
+  const descriptionParts: string[] = [];
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  const relativeFilePath = workspaceFolder
+    ? path.relative(workspaceFolder.uri.fsPath, uri.fsPath)
+    : path.relative(path.dirname(sourceUri.fsPath), uri.fsPath);
+  const relativeDirectory = path.dirname(relativeFilePath);
+
+  if (workspaceFolder && workspaceFolders.length > 1) {
+    descriptionParts.push(workspaceFolder.name);
+  }
+
+  if (relativeDirectory !== '.') {
+    descriptionParts.push(relativeDirectory);
+  }
+
+  return descriptionParts;
 }
 
 function createListFileNode(
