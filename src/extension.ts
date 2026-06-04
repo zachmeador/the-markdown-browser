@@ -904,7 +904,6 @@ export function activate(context: vscode.ExtensionContext): void {
     void updateHasGitWorkspaceContext(provider);
   };
   const refreshChangedMarkdown = (uri: vscode.Uri) => {
-    refresh();
     void markdownPreview.refreshIfCurrent(uri);
     void markdownPreviewEditor.refresh(uri);
   };
