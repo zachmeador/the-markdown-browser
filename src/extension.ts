@@ -64,11 +64,15 @@ interface OpenLinkMessage {
   openInNewTab?: boolean;
 }
 
+interface OpenSourceMessage {
+  type: 'openSource';
+}
+
 interface HistoryMessage {
   type: 'back' | 'forward';
 }
 
-type WebviewMessage = OpenLinkMessage | HistoryMessage;
+type WebviewMessage = OpenLinkMessage | OpenSourceMessage | HistoryMessage;
 type LinkTarget =
   | { kind: 'markdown'; location: MarkdownLocation }
   | { kind: 'file' | 'folder' | 'external'; uri: vscode.Uri }
@@ -178,6 +182,14 @@ class MarkdownBrowserPreview {
 
     if (message.type === 'forward') {
       await this.goForward();
+      return;
+    }
+
+    if (message.type === 'openSource') {
+      if (this.current) {
+        await openMarkdownSource(this.current.uri);
+      }
+
       return;
     }
 
@@ -317,6 +329,11 @@ class MarkdownBrowserCustomEditorProvider implements vscode.CustomReadonlyEditor
   }
 
   private async handleMessage(sourceUri: vscode.Uri, message: WebviewMessage): Promise<void> {
+    if (message.type === 'openSource') {
+      await openMarkdownSource(sourceUri);
+      return;
+    }
+
     if (message.type !== 'openLink') {
       return;
     }
@@ -467,6 +484,16 @@ ${body}
         href,
         openInNewTab: event.metaKey || event.ctrlKey
       });
+    });
+
+    document.addEventListener('dblclick', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (target?.closest('a, button, input, textarea, select, summary, [contenteditable="true"]')) {
+        return;
+      }
+
+      event.preventDefault();
+      vscode.postMessage({ type: 'openSource' });
     });
 
     const pressedNavigationButtons = new Set();
@@ -950,6 +977,14 @@ async function openMarkdownPreview(markdownPreview: MarkdownBrowserPreview, uri?
   }
 
   await markdownPreview.open(uri);
+}
+
+async function openMarkdownSource(uri: vscode.Uri): Promise<void> {
+  const document = await vscode.workspace.openTextDocument(uri.with({ fragment: '' }));
+  await vscode.window.showTextDocument(document, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.Active
+  });
 }
 
 async function updateViewMode(
