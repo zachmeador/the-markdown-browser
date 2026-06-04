@@ -30,13 +30,15 @@ Use one release commit and an annotated `vX.Y.Z` git tag that points at that com
 7. Commit with `git commit -m "Release vX.Y.Z"`.
 8. Tag the release commit with `git tag -a vX.Y.Z -m "vX.Y.Z"`.
 9. Push the release commit and tag with `git push origin HEAD --follow-tags`.
-10. Publish from the tagged commit with `npx @vscode/vsce publish`. If tag-based CI publishing is enabled, do not also publish locally.
+10. Create a GitHub Release for the pushed tag with `gh release create vX.Y.Z the-markdown-browser-X.Y.Z.vsix --title "vX.Y.Z" --notes-file CHANGELOG.md`, or use concise release-specific notes if the changelog contains multiple releases.
+11. Publish from the tagged commit with `npx @vscode/vsce publish`. If tag-based CI publishing is enabled, do not also publish locally.
 
 ## Publishing Notes
 
 - Authenticate as the configured publisher with `npx @vscode/vsce login ZachMeador`, or set `VSCE_PAT` in the environment before publishing.
 - `vsce publish patch`, `vsce publish minor`, `vsce publish major`, and `vsce publish X.Y.Z` can bump the version and create a git commit/tag automatically. Avoid that shortcut for normal releases here unless the changelog has already been handled, because the release commit should include the changelog update.
 - For an automated proper release, add CI that runs only for pushed `v*` tags, installs dependencies, runs `npm run compile`, and publishes with `npx @vscode/vsce publish` using `VSCE_PAT` from CI secrets.
+- GitHub Releases are separate from VS Marketplace releases. They require pushed annotated tags plus a GitHub Release object; attach the generated `.vsix` so each GitHub release has a downloadable artifact.
 - Avoid checking in generated `.vsix` files unless the release process intentionally changes; they are currently ignored.
 
 ## References
