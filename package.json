@@ -2,7 +2,7 @@
   "name": "the-markdown-browser",
   "displayName": "The Markdown Browser",
   "description": "A good markdown browser.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "ZachMeador",
   "license": "MIT",
   "repository": {
@@ -31,7 +31,8 @@
     "onCommand:markdownBrowser.showGitignoredFiles",
     "onCommand:markdownBrowser.showTreeView",
     "onCommand:markdownBrowser.toggleExplorerPreviewOpen",
-    "onCommand:markdownBrowser.refresh"
+    "onCommand:markdownBrowser.refresh",
+    "onCustomEditor:markdownBrowser.previewEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -109,11 +110,35 @@
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "markdownBrowser.previewEditor",
+        "displayName": "Markdown Browser Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
+          },
+          {
+            "filenamePattern": "*.mdown"
+          },
+          {
+            "filenamePattern": "*.mkd"
+          },
+          {
+            "filenamePattern": "*.mkdn"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {
           "command": "markdownBrowser.openPreview",
-          "when": "editorLangId == markdown"
+          "when": "editorLangId == 'markdown'"
         },
         {
           "command": "markdownBrowser.navigateBack",
@@ -130,7 +155,7 @@
       "editor/title": [
         {
           "command": "markdownBrowser.openPreview",
-          "when": "editorLangId == markdown",
+          "when": "editorLangId == 'markdown'",
           "group": "navigation"
         },
         {
@@ -147,44 +172,44 @@
       "explorer/context": [
         {
           "command": "markdownBrowser.openPreview",
-          "when": "resourceLangId == markdown",
+          "when": "resourceLangId == 'markdown'",
           "group": "navigation"
         }
       ],
       "view/title": [
         {
           "command": "markdownBrowser.showListView",
-          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.viewMode == 'tree' && markdownBrowser.treeBusy != true",
           "group": "navigation@1"
         },
         {
           "command": "markdownBrowser.showTreeView",
-          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == list",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.viewMode == 'list' && markdownBrowser.treeBusy != true",
           "group": "navigation@1"
         },
         {
           "command": "markdownBrowser.expandAll",
-          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree && markdownBrowser.treeExpanded == false",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.viewMode == 'tree' && markdownBrowser.treeExpanded == false && markdownBrowser.treeBusy != true",
           "group": "navigation@2"
         },
         {
           "command": "markdownBrowser.collapseAll",
-          "when": "view == markdownBrowser.files && markdownBrowser.viewMode == tree && markdownBrowser.treeExpanded == true",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.viewMode == 'tree' && markdownBrowser.treeExpanded == true && markdownBrowser.treeBusy != true",
           "group": "navigation@2"
         },
         {
           "command": "markdownBrowser.showGitignoredFiles",
-          "when": "view == markdownBrowser.files && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == false",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == false && markdownBrowser.treeBusy != true",
           "group": "navigation@3"
         },
         {
           "command": "markdownBrowser.hideGitignoredFiles",
-          "when": "view == markdownBrowser.files && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == true",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.hasGitWorkspace == true && markdownBrowser.showGitignoredFiles == true && markdownBrowser.treeBusy != true",
           "group": "navigation@3"
         },
         {
           "command": "markdownBrowser.refresh",
-          "when": "view == markdownBrowser.files",
+          "when": "view == 'markdownBrowser.files' && markdownBrowser.treeBusy != true",
           "group": "navigation@9"
         }
       ]
